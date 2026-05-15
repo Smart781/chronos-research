@@ -1,0 +1,2 @@
+model,series,context_length,prediction_length,MAE,sMAPE,WQL
+chronos-t5-small-zero-shot,H1,532,168,39.1706718263172,5.977646752416638,18.68510434589689
