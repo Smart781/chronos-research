@@ -320,14 +320,14 @@ def train():
     model.model.save_pretrained(output_dir)
     if args.use_ordinal_head and model.ordinal_head:
         torch.save(model.ordinal_head.state_dict(), output_dir / 'ordinal_head.pt')
-    print(f"\n✅ Training complete! Final model saved to {output_dir}")
+    print(f"\nFinal model saved to {output_dir}")
 
 if __name__ == '__main__':
     try:
         train()
     except KeyboardInterrupt:
-        print("\n\n⚠️ Training interrupted by user")
+        print("\n\nInterrupted")
     except Exception as e:
-        print(f"\n\n❌ Error: {e}")
+        print(f"\n\n Error: {e}")
         import traceback
         traceback.print_exc()
