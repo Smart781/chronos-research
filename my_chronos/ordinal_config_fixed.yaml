@@ -1,0 +1,14 @@
+dataset: "m4_hourly"
+model_id: "amazon/chronos-t5-small"
+context_length: 64
+prediction_length: 12
+max_series: 20
+learning_rate: 0.0001
+weight_decay: 0.01
+epochs: 50
+output_dir: "./ordinal_model_checkpoints_fixed"
+freq: "H"
+n_tokens: 32
+n_special_tokens: 2
+batch_size: 1
+num_workers: 0
