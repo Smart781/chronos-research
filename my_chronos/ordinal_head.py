@@ -32,28 +32,3 @@ class ProportionalOddsHead(nn.Module):
         probs = torch.diff(cumprobs_padded, dim=-1)
         probs = probs / probs.sum(dim=-1, keepdim=True)
         return probs
-
-class OrdinalCrossEntropyLoss(nn.Module):
-    def __init__(self, distance_weight: float = 1.0):
-        super().__init__()
-        self.distance_weight = distance_weight
-
-    def forward(self, predictions: torch.Tensor, targets: torch.Tensor, num_bins: int) -> torch.Tensor:
-        predictions = predictions.reshape(-1, num_bins)
-        targets = targets.reshape(-1).long()
-        targets = torch.clamp(targets, 0, num_bins - 1)
-        
-        min_size = min(predictions.shape[0], targets.shape[0])
-        predictions = predictions[:min_size]
-        targets = targets[:min_size]
-        
-        loss = F.cross_entropy(predictions, targets, reduction='mean')
-        
-        if self.distance_weight > 0:
-            probs = F.softmax(predictions, dim=-1)
-            pred_classes = torch.argmax(probs, dim=-1)
-            distance = torch.abs(pred_classes.float() - targets.float())
-            weighted_loss = loss + self.distance_weight * distance.mean() / num_bins
-            return weighted_loss
-        
-        return loss

@@ -3,27 +3,54 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_absolute_error
-from datasets import load_dataset
+from pathlib import Path
 from transformers import AutoModelForSeq2SeqLM
 from chronos import ChronosPipeline, ChronosConfig, MeanScaleUniformBins
 from ordinal_head import ProportionalOddsHead
 import warnings
-from train_ordinal import OrdinalChronosModel
+from train_ordinal import FixedOrdinalModel
+from datasets import load_dataset
 warnings.filterwarnings('ignore')
 
 def smape(actual, forecast):
     return 100 * np.mean(2 * np.abs(actual - forecast) / (np.abs(actual) + np.abs(forecast) + 1e-8))
 
+def load_data():
+    local_path = Path("./data/m4_hourly_train.parquet")
+    if local_path.exists():
+        print(f"Loading from local file: {local_path}")
+        df = pd.read_parquet(local_path)
+        return df
+    
+    print("Loading from Hugging Face datasets...")
+    try:
+        dataset = load_dataset(
+            "autogluon/chronos_datasets", 
+            "m4_hourly", 
+            split="train",
+            download_mode="reuse_dataset_if_exists"
+        )
+        df = dataset.to_pandas()
+        local_path.parent.mkdir(exist_ok=True)
+        df.to_parquet(local_path)
+        print(f"Saved to {local_path} for future use")
+        return df
+    except Exception as e:
+        print(f"Error loading from Hugging Face: {e}")
+        raise
+
 device = "cpu"
 print(f"Device: {device}")
 
+print("Loading original Chronos model...")
 pipeline_orig = ChronosPipeline.from_pretrained(
     "amazon/chronos-t5-small",
     device_map=device,
-    torch_dtype=torch.float32,
+    dtype=torch.float32,
 )
 
-checkpoint_path = "./ordinal_model_checkpoints_fixed/best_model"
+print("Loading ordinal model...")
+checkpoint_path = "./ordinal_model_checkpoints_final/best_model"
 
 inner_model = AutoModelForSeq2SeqLM.from_pretrained(checkpoint_path)
 
@@ -32,7 +59,7 @@ chronos_config = ChronosConfig(
     tokenizer_kwargs={'low_limit': -15, 'high_limit': 15},
     context_length=64,
     prediction_length=12,
-    n_tokens=32,
+    n_tokens=66,
     n_special_tokens=2,
     pad_token_id=0,
     eos_token_id=1,
@@ -44,27 +71,30 @@ chronos_config = ChronosConfig(
     top_p=0.95,
 )
 
-model_ordinal = OrdinalChronosModel(
+model_ordinal = FixedOrdinalModel(
     config=chronos_config,
     model=inner_model,
     use_ordinal_head=True
 ).to(device)
 model_ordinal.eval()
 
-num_bins = 30
+num_bins = 64
 model_ordinal.ordinal_head = ProportionalOddsHead(
     hidden_dim=inner_model.config.d_model,
     num_bins=num_bins,
 ).to(device)
 
 ordinal_head_path = f"{checkpoint_path}/ordinal_head.pt"
-model_ordinal.ordinal_head.load_state_dict(torch.load(ordinal_head_path, map_location=device))
-print("Ordinal head loaded successfully")
+if Path(ordinal_head_path).exists():
+    model_ordinal.ordinal_head.load_state_dict(torch.load(ordinal_head_path, map_location=device))
+    print("Ordinal head loaded successfully")
+else:
+    print(f"Warning: ordinal_head.pt not found at {ordinal_head_path}")
 
 tokenizer = MeanScaleUniformBins(low_limit=-15, high_limit=15, config=chronos_config)
 
-dataset = load_dataset("autogluon/chronos_datasets", "m4_hourly", split="train")
-df = dataset.to_pandas()
+print("Loading dataset...")
+df = load_data()
 
 context_length = 64
 prediction_length = 12
@@ -83,6 +113,7 @@ print(f"Testing on {len(test_series_list)} series")
 
 results_orig = []
 results_ordinal = []
+centers = np.linspace(-15, 15, num_bins)
 
 for idx, series in enumerate(test_series_list):
     context_vals = series[:-prediction_length]
@@ -106,12 +137,21 @@ for idx, series in enumerate(test_series_list):
         attention_mask = attention_mask.to(device)
         
         probs = model_ordinal.forward_ordinal(token_ids, attention_mask, prediction_length)
-        pred_tokens = torch.argmax(probs, dim=-1)
-        pred_tokens_flat = pred_tokens.squeeze().cpu().numpy()
-        scale_val = scale.squeeze().cpu().numpy()
+        probs_np = probs.squeeze().cpu().numpy()
         
-        centers = np.linspace(-15, 15, num_bins)
-        forecast_ordinal = centers[pred_tokens_flat] * scale_val
+        forecast_normalized = np.sum(probs_np * centers.reshape(1, -1), axis=1)
+        
+        scale_val = scale.squeeze().cpu().numpy()
+        forecast_ordinal = forecast_normalized * scale_val
+        
+        if idx == 0:
+            print(f"\nDebug first series:")
+            print(f"  Scale from tokenizer: {scale_val:.4f}")
+            print(f"  Forecast normalized (expectation): {forecast_normalized[:5]}")
+            print(f"  Forecast ordinal: {forecast_ordinal[:5]}")
+            print(f"  Test values (first 5): {test_vals[:5]}")
+            print(f"  Original forecast: {median_orig[:5]}")
+            print(f"  Max probability: {probs_np.max():.4f}")
     
     results_orig.append({
         'mae': mean_absolute_error(test_vals, median_orig),
@@ -125,16 +165,9 @@ for idx, series in enumerate(test_series_list):
     
     if (idx + 1) % 5 == 0:
         print(f"Processed {idx + 1}/{len(test_series_list)} series")
-    
-    if idx == 0:
-        print(f"\nDebug first series:")
-        print(f"  Test values (first 5): {test_vals[:5]}")
-        print(f"  Ordinal forecast (first 5): {forecast_ordinal[:5]}")
-        print(f"  Original forecast (first 5): {median_orig[:5]}")
 
 avg_mae_orig = np.mean([r['mae'] for r in results_orig])
 avg_smape_orig = np.mean([r['smape'] for r in results_orig])
-
 avg_mae_ord = np.mean([r['mae'] for r in results_ordinal])
 avg_smape_ord = np.mean([r['smape'] for r in results_ordinal])
 
