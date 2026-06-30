@@ -1,13 +1,26 @@
-import requests
+from datasets import load_dataset
 import pandas as pd
 from pathlib import Path
 
-url = "https://huggingface.co/datasets/autogluon/chronos_datasets/resolve/main/m4_hourly/train-00000-of-00001.parquet"
+datasets = [
+    "m4_hourly",
+    "m4_daily",
+    "m4_weekly",
+    "m4_monthly",
+    "m4_quarterly",
+    "m4_yearly",
+]
+
 Path("./data").mkdir(exist_ok=True)
 
-response = requests.get(url, stream=True)
-response.raise_for_status()
-
-with open("./data/m4_hourly_train.parquet", 'wb') as f:
-    for chunk in response.iter_content(chunk_size=8192):
-        f.write(chunk)
+for dataset_name in datasets:
+    print(f"\nDownloading {dataset_name}...")
+    try:
+        dataset = load_dataset("autogluon/chronos_datasets", dataset_name, split="train")
+        df = dataset.to_pandas()
+        local_path = Path(f"./data/{dataset_name}_train.parquet")
+        df.to_parquet(local_path)
+        print(f"Saved to {local_path}")
+        print(f"  Rows: {len(df)}, Series: {df['id'].nunique()}")
+    except Exception as e:
+        print(f"Error downloading {dataset_name}: {e}")
